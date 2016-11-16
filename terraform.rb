@@ -1,54 +1,41 @@
-# Documentation: https://github.com/Homebrew/brew/blob/master/docs/Formula-Cookbook.md
-#                http://www.rubydoc.info/github/Homebrew/brew/master/Formula
-# PLEASE REMOVE ALL GENERATED COMMENTS BEFORE SUBMITTING YOUR PULL REQUEST!
+
 require "language/go"
 
 class Terraform < Formula
   desc "Tool to build, change, and version infrastructure"
   homepage "https://www.terraform.io/"
-  url "https://releases.hashicorp.com/terraform/0.6.16/terraform_0.6.16_darwin_amd64.zip"
-  version "64"
-  sha256 "23feb79263126877e6128a03c600cd626f6691a118a474694c5ad45cc5da9366"
+  url "https://github.com/hashicorp/terraform/archive/v0.6.16.tar.gz"
+  sha256 "c84bae32a170d993982de9c537eac74f70601e7a667dc2ea9803b86e04b1221d"
+  head "https://github.com/hashicorp/terraform.git"
 
   bottle do
     cellar :any_skip_relocation
-    sha256 "14cbb8858867b76b3fabb2c33f1fc5b9552aa1f103b93c807e669135aadda8a2" => :sierra
-    sha256 "7b5eec03b39fab1fab16673eb4507846360bc5ad73e56e86647dbfaae08e09cd" => :el_capitan
-    sha256 "6001f3504249e13177e9c25d59e2bc5b172fa957eabf6b6edbd93add119508e0" => :yosemite
-  end
-
-  devel do
-    url "https://github.com/hashicorp/terraform/archive/v0.8.0-beta1.tar.gz"
-    sha256 "c159a78c56446b3231bce9b0e176e9f25568e3f6290135acafe333199f86644a"
-    version "0.8.0-beta1"
+    sha256 "4f99b0131fedbb11931e8b115fadf3f85376dbdd7c89fcbd3fd5765861cf7068" => :el_capitan
+    sha256 "caae52c73d94465617930a76aadfb7d6a643bc9e6664707de80cdb1853dd04f4" => :yosemite
+    sha256 "7f1b66e574e2b745e003b3187be684d55e5870d24d0c52a149188e9208852570" => :mavericks
   end
 
   depends_on "go" => :build
 
-  go_resource "github.com/mitchellh/gox" do
-    url "https://github.com/mitchellh/gox.git",
-        :revision => "c9740af9c6574448fd48eb30a71f964014c7a837"
-  end
+  terraform_deps = %w[
+    github.com/mitchellh/gox 770c39f64e66797aa46b70ea953ff57d41658e40
+    github.com/mitchellh/iochan 87b45ffd0e9581375c491fef3d32130bb15c5bd7
+  ]
 
-  go_resource "github.com/mitchellh/iochan" do
-    url "https://github.com/mitchellh/iochan.git",
-        :revision => "87b45ffd0e9581375c491fef3d32130bb15c5bd7"
-  end
-
-  go_resource "github.com/kisielk/errcheck" do
-    url "https://github.com/kisielk/errcheck.git",
-        :revision => "9c1292e1c962175f76516859f4a88aabd86dc495"
-  end
-
-  go_resource "github.com/kisielk/gotool" do
-    url "https://github.com/kisielk/gotool.git",
-        :revision => "5e136deb9b893bbe6c8f23236ff4378b7a8a0dbb"
+  terraform_deps.each_slice(2) do |x, y|
+    go_resource x do
+      url "https://#{x}.git", :revision => y
+    end
   end
 
   go_resource "golang.org/x/tools" do
-    url "https://go.googlesource.com/tools.git",
-        :revision => "26c35b4dcf6dfcb924e26828ed9f4d028c5ce05a"
+    url "https://go.googlesource.com/tools.git", :revision => "977844c7af2aa555048a19d28e9fe6c392e7b8e9"
   end
+
+  # This patch works around a known test failure, which will be fixed in terraform version 0.6.17.
+  # https://github.com/hashicorp/terraform/issues/6709
+  # https://github.com/hashicorp/terraform/commit/6a20e8
+  patch :DATA
 
   def install
     ENV["GOPATH"] = buildpath
@@ -66,13 +53,8 @@ class Terraform < Formula
     end
 
     cd "src/golang.org/x/tools/cmd/stringer" do
-      ENV.deparallelize { system "go", "build" }
-      buildpath.install "stringer"
-    end
-
-    cd "src/github.com/kisielk/errcheck" do
       system "go", "build"
-      buildpath.install "errcheck"
+      buildpath.install "stringer"
     end
 
     cd terrapath do
@@ -80,17 +62,17 @@ class Terraform < Formula
       ENV.delete "AWS_ACCESS_KEY"
       ENV.delete "AWS_SECRET_KEY"
 
-      # Runs format check and test suite via makefile
-      ENV.deparallelize { system "make", "test", "vet" }
+      terraform_files = `go list ./...`.lines.map { |f| f.strip unless f.include? "/vendor/" }.compact
+      system "go", "test", *terraform_files
 
-      # Generate release binary
+      mkdir "bin"
       arch = MacOS.prefer_64_bit? ? "amd64" : "386"
-      ENV["XC_OS"] = "darwin"
-      ENV["XC_ARCH"] = arch
-      system "make", "bin"
-
-      # Install release binary
-      bin.install "pkg/darwin_#{arch}/terraform"
+      system "gox",
+        "-arch", arch,
+        "-os", "darwin",
+        "-output", "bin/terraform-{{.Dir}}", *terraform_files
+      bin.install "bin/terraform-terraform" => "terraform"
+      bin.install Dir["bin/*"]
       zsh_completion.install "contrib/zsh-completion/_terraform"
     end
   end
@@ -128,3 +110,18 @@ class Terraform < Formula
   end
 end
 
+__END__
+diff --git a/state/remote/atlas_test.go b/state/remote/atlas_test.go
+index 847fb39..1a6c710 100644
+--- a/state/remote/atlas_test.go
++++ b/state/remote/atlas_test.go
+@@ -159,8 +159,8 @@ func TestAtlasClient_UnresolvableConflict(t *testing.T) {
+	select {
+	case <-doneCh:
+		// OK
+-	case <-time.After(50 * time.Millisecond):
+-		t.Fatalf("Timed out after 50ms, probably because retrying infinitely.")
++	case <-time.After(500 * time.Millisecond):
++		t.Fatalf("Timed out after 500ms, probably because retrying infinitely.")
+	}
+ }
